@@ -2775,6 +2775,13 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
       hideWindowExitingFullscreen({
         hide: () => {
           window.hide();
+          // Reopening the app activates it before `show()` runs, and macOS
+          // then switches to the Space the window was closed on. A hidden
+          // window on every Space gives it nowhere to switch to;
+          // showHiddenWindowWhereCalled pins it to the active Space again.
+          if (options.menubarResident === true) {
+            window.setVisibleOnAllWorkspaces(true, { skipTransformProcessType: true });
+          }
           hideDock();
         },
         isFullScreen: () => window.isFullScreen(),
