@@ -1836,6 +1836,11 @@ export function WorkspaceTabsBar({
 
   function closeActiveTab() {
     const normalized = normalizeTabsState(state);
+    const activeTab = normalized.tabs.find((tab) => tab.id === normalized.activeTabId);
+    if (activeTab?.kind === 'entry') {
+      void window.openDesignDesktop?.hideWindow?.();
+      return;
+    }
     closeTab(normalized.activeTabId);
   }
 

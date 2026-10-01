@@ -4,7 +4,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { BrowserWindow, Menu, app, dialog, globalShortcut, powerMonitor, shell, type MenuItemConstructorOptions } from "electron";
+import { BrowserWindow, Menu, app, dialog, globalShortcut, ipcMain, powerMonitor, shell, type MenuItemConstructorOptions } from "electron";
 
 import {
   APP_KEYS,
@@ -1039,9 +1039,17 @@ export async function runDesktopMain(
     app,
     (event, properties) => reportDesktopObservabilityEvent(discoverDaemonBaseUrl, event, properties),
   );
-  removeDiagnosticsIpc = registerDesktopDiagnosticsIpc({
+  const removeRegisteredDiagnosticsIpc = registerDesktopDiagnosticsIpc({
     discoverDaemonBaseUrl: resolveDaemonBaseUrl(options),
   });
+  ipcMain.handle("window:hide", (event) => {
+    if (process.platform !== "darwin") return;
+    BrowserWindow.fromWebContents(event.sender)?.close();
+  });
+  removeDiagnosticsIpc = () => {
+    removeRegisteredDiagnosticsIpc();
+    ipcMain.removeHandler("window:hide");
+  };
   // Route opendesign:// team-invite deeplinks to the daemon (desktop wake-up).
   registerInviteDeeplink({
     resolveDaemonBaseUrl: resolveDaemonBaseUrl(options),
