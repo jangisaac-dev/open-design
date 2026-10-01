@@ -85,6 +85,7 @@ export {
   type SplashBootStage,
   type SplashStageSurface,
 } from "./runtime.js";
+export { createMenubarTray } from "./menubar.js";
 
 // Re-export the path-validation helpers for the same reason (#974).
 // shell.openPath is privileged main-process behaviour; pinning the
@@ -214,6 +215,8 @@ export type DesktopMainOptions = {
   inviteProtocolClientPath?: string | null;
   preloadPath?: string;
   windowTitle?: string;
+  /** Packaged macOS app with a menu bar icon; see DesktopRuntimeOptions.menubarResident. */
+  menubarResident?: boolean;
   onDesktopReady?: (controls: {
     dispatchInviteDeeplink(url: string | null): void;
     show(): void;
@@ -975,6 +978,7 @@ export async function runDesktopMain(
     desktopAuthSecret,
     discoverUrl: options.discoverWebUrl,
     discoverDaemonUrl: options.discoverDaemonUrl,
+    menubarResident: options.menubarResident,
     osLocale,
     preloadPath: options.preloadPath,
     // Round-5 (lefarcen P1, mrcfps): runtime hands this back to itself
@@ -1055,6 +1059,9 @@ export async function runDesktopMain(
     intervalMs: updater.config.checkIntervalMs,
     startupSilentPayloadUpdate: {
       isEnabled: async () => {
+        // Hidden to the menu bar: quitting now would drop connected MCP
+        // clients, so the downloaded payload waits for the next launch.
+        if (desktop?.status().restorable === true) return false;
         const baseUrl = await discoverUpdaterAppConfigBaseUrl();
         const config = await readAppConfigFromDaemon(baseUrl);
         return config.allowSilentUpdates === true;

@@ -412,6 +412,7 @@ describe("runElectronBuilder", () => {
       files: string[];
       afterSign?: string;
       mac?: {
+        extendInfo?: { LSUIElement: boolean };
         notarize?: boolean;
       };
     };
@@ -424,6 +425,7 @@ describe("runElectronBuilder", () => {
 
       expect(builderConfig.afterSign).toContain("notarize.cjs");
       expect(builderConfig.mac).not.toHaveProperty("notarize");
+      expect(builderConfig.mac?.extendInfo).toEqual({ LSUIElement: true });
     } finally {
       await rm(root, { force: true, recursive: true });
     }
