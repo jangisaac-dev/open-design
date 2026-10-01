@@ -1767,6 +1767,32 @@ export function ensureWindowVisible(window: BrowserWindow): void {
 }
 
 /**
+ * Shows a hidden window where the user called it from: the display under the
+ * cursor and the current Space, instead of macOS switching back to the Space
+ * the window was closed on. Joining every Space for the show pins the window
+ * to the active one; `skipTransformProcessType` keeps the toggle from flipping
+ * the process type, which can leave the app without a Dock icon (#2394).
+ */
+function showHiddenWindowWhereCalled(window: BrowserWindow): void {
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const bounds = window.getBounds();
+  if (screen.getDisplayMatching(bounds).id !== display.id) {
+    const area = display.workArea;
+    const width = Math.min(bounds.width, area.width);
+    const height = Math.min(bounds.height, area.height);
+    window.setBounds({
+      x: area.x + Math.round((area.width - width) / 2),
+      y: area.y + Math.round((area.height - height) / 2),
+      width,
+      height,
+    });
+  }
+  window.setVisibleOnAllWorkspaces(true, { skipTransformProcessType: true });
+  ensureWindowVisible(window);
+  window.setVisibleOnAllWorkspaces(false, { skipTransformProcessType: true });
+}
+
+/**
  * Surface of {@link BrowserWindow} consumed by
  * {@link hideWindowExitingFullscreen} — declared structurally so the
  * helper can be exercised with a plain mock in unit tests without
@@ -3141,6 +3167,10 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
           splash.show();
           splash.focus();
         }
+        return;
+      }
+      if (options.menubarResident === true && !window.isVisible()) {
+        showHiddenWindowWhereCalled(window);
         return;
       }
       // A minimized window must be restored before focus — `focus()` alone
