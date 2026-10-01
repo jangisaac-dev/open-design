@@ -57,12 +57,17 @@ built=$(corepack pnpm --silent tools-pack mac build --app-version "$version" --n
 
 # Quit the running app through its normal quit path so the daemon shuts down cleanly.
 python3 - <<'EOF'
-import time
+import os, time
 from AppKit import NSRunningApplication
 apps = NSRunningApplication.runningApplicationsWithBundleIdentifier_("io.open-design.desktop")
+pids = [a.processIdentifier() for a in apps]
 for a in apps: a.terminate()
+def alive(pid):
+    # isTerminated() only updates on a running AppKit run loop; ask the kernel.
+    try: os.kill(pid, 0); return True
+    except ProcessLookupError: return False
 for _ in range(60):
-    if all(a.isTerminated() for a in apps): break
+    if not any(alive(p) for p in pids): break
     time.sleep(0.5)
 else:
     raise SystemExit("Open Design did not quit; install skipped")
