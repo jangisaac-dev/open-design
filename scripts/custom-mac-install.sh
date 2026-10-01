@@ -33,15 +33,6 @@ corepack pnpm --filter @open-design/tools-pack build
 target=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$APP_LINK")
 config="$target/Contents/Resources/open-design-config.json"
 python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$config"   # fail here, not with empty build values
-
-# The launcher prefers a downloaded official payload of the same or a newer
-# version over the installed bundle, which would run code without this branch.
-payloads="$HOME/Library/Application Support/Open Design/launcher/channels/stable/namespaces/release-stable/versions"
-for v in $(ls "$payloads" 2>/dev/null); do
-  if [[ "$(printf '%s\n%s\n' "$version" "$v" | sort -V | head -1)" == "$version" ]]; then
-    echo "official payload $v in $payloads would override this build; remove it first" >&2; exit 1
-  fi
-done
 read_config() {
   python3 -c 'import json,sys
 v = json.load(open(sys.argv[1]))
@@ -76,6 +67,11 @@ for _ in range(60):
 else:
     raise SystemExit("Open Design did not quit; install skipped")
 EOF
+
+# This build never updates in place, so a downloaded official payload could
+# only run instead of it: the launcher prefers a newer one and rolls back to
+# an older "last successful" one. Drop them all.
+rm -rf "$HOME/Library/Application Support/Open Design/launcher/channels/stable/namespaces/release-stable/versions/"*
 
 # Keep at most two backups: the last official app and the last custom build.
 mkdir -p "$BACKUP_DIR"
