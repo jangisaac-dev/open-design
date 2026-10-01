@@ -48,7 +48,9 @@ export OD_VELA_WEB_URL_TEST=$(read_config velaWebUrls.test)
 export OD_VELA_WEB_URL_FEATURE_TEST=$(read_config velaWebUrls.feature-test)
 export OD_UPDATE_METADATA_URL="http://127.0.0.1:9/open-design-custom-build-updates-disabled/metadata.json"
 
-built=$(corepack pnpm --silent tools-pack mac build --app-version "$version" --portable --to app --json \
+# A plain x.y.z version carries no channel, so name the stable namespace the
+# way the official stable build does; otherwise the app opens "default" data.
+built=$(corepack pnpm --silent tools-pack mac build --app-version "$version" --namespace release-stable --portable --to app --json \
   | python3 -c 'import json,sys; s=sys.stdin.read(); i=0 if s.startswith("{") else s.find("\n{")+1; print(json.loads(s[i:])["appPath"])')
 [[ -d "$built" ]] || { echo "build did not report an app path" >&2; exit 1; }
 
@@ -67,7 +69,8 @@ EOF
 mkdir -p "$BACKUP_DIR"
 if [[ -d "$target" ]]; then
   kind=custom
-  codesign -dv "$target" 2>&1 | grep -q '^TeamIdentifier=236R69AWW2$' && kind=official
+  signature=$(codesign -dv "$target" 2>&1 || true)
+  [[ "$signature" == *"TeamIdentifier=236R69AWW2"* ]] && kind=official
   rm -f "$BACKUP_DIR/$kind-"*.zip
   ditto -c -k --keepParent "$target" "$BACKUP_DIR/$kind-$(date +%Y%m%d-%H%M%S).zip"
   rm -rf "$target"
