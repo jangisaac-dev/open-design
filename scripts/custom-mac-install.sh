@@ -30,8 +30,18 @@ version=$(git describe --tags --abbrev=0 --match 'open-design-v[0-9]*' HEAD | se
 corepack pnpm install --frozen-lockfile
 corepack pnpm --filter @open-design/tools-pack build
 
-target=$(readlink "$APP_LINK" || echo "$APP_LINK")
+target=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$APP_LINK")
 config="$target/Contents/Resources/open-design-config.json"
+python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$config"   # fail here, not with empty build values
+
+# The launcher prefers a downloaded official payload of the same or a newer
+# version over the installed bundle, which would run code without this branch.
+payloads="$HOME/Library/Application Support/Open Design/launcher/channels/stable/namespaces/release-stable/versions"
+for v in $(ls "$payloads" 2>/dev/null); do
+  if [[ "$(printf '%s\n%s\n' "$version" "$v" | sort -V | head -1)" == "$version" ]]; then
+    echo "official payload $v in $payloads would override this build; remove it first" >&2; exit 1
+  fi
+done
 read_config() {
   python3 -c 'import json,sys
 v = json.load(open(sys.argv[1]))
@@ -63,6 +73,8 @@ for a in apps: a.terminate()
 for _ in range(60):
     if all(a.isTerminated() for a in apps): break
     time.sleep(0.5)
+else:
+    raise SystemExit("Open Design did not quit; install skipped")
 EOF
 
 # Keep at most two backups: the last official app and the last custom build.
@@ -71,9 +83,13 @@ if [[ -d "$target" ]]; then
   kind=custom
   signature=$(codesign -dv "$target" 2>&1 || true)
   [[ "$signature" == *"TeamIdentifier=236R69AWW2"* ]] && kind=official
-  rm -f "$BACKUP_DIR/$kind-"*.zip
-  ditto -c -k --keepParent "$target" "$BACKUP_DIR/$kind-$(date +%Y%m%d-%H%M%S).zip"
-  rm -rf "$target"
+  backup="$BACKUP_DIR/$kind-$(date +%Y%m%d-%H%M%S).zip"
+  ditto -c -k --keepParent "$target" "$backup"
+  find "$BACKUP_DIR" -name "$kind-*.zip" ! -path "$backup" -delete
 fi
-ditto "$built" "$target"
+# Copy beside the old app first, so a failed copy leaves the old app in place.
+rm -rf "$target.new"
+ditto "$built" "$target.new"
+rm -rf "$target"
+mv "$target.new" "$target"
 echo "installed Open Design $version (custom) at $target"
