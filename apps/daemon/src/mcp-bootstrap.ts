@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { isAbsolute } from "node:path";
+import { existsSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 
 import { SidecarFactory } from "@open-design/sidecar";
 import {
@@ -12,6 +13,18 @@ import { resolveDaemonUrl as resolveDaemonUrlDefault } from "./daemon-url.js";
 
 const DEFAULT_BOOTSTRAP_TIMEOUT_MS = 60_000;
 const DEFAULT_BOOTSTRAP_POLL_MS = 250;
+export const MCP_USER_QUIT_MESSAGE = "Open Design is not running because the user quit it. Ask the user to open the Open Design app, then retry.";
+
+export class McpUserQuitError extends Error {
+  constructor() {
+    super(MCP_USER_QUIT_MESSAGE);
+    this.name = "McpUserQuitError";
+  }
+}
+
+export function isMcpUserQuitError(error: unknown): boolean {
+  return error instanceof McpUserQuitError;
+}
 
 export type McpDaemonBootstrapPlan =
   | {
@@ -19,6 +32,7 @@ export type McpDaemonBootstrapPlan =
       reason:
         | "daemon-ready"
         | "explicit-daemon-url"
+        | "user-quit"
         | "bootstrap-unavailable"
         | "invalid-bootstrap-command"
         | "invalid-bootstrap-args";
@@ -44,6 +58,14 @@ export function planMcpDaemonBootstrap(
   }
   if (options.explicitDaemonUrl) {
     return { action: "none", reason: "explicit-daemon-url" };
+  }
+  const dataRoot = options.env.OD_DATA_DIR;
+  if (
+    dataRoot != null
+    && dataRoot.length > 0
+    && existsSync(join(dataRoot, MCP_BOOTSTRAP_CONTRACT.USER_QUIT_MARKER))
+  ) {
+    return { action: "none", reason: "user-quit" };
   }
   const command = options.env.OD_MCP_BOOTSTRAP_COMMAND;
   if (command == null || command.length === 0) {
@@ -172,6 +194,7 @@ export async function ensureMcpDaemonUrl(
     explicitDaemonUrl,
   });
   if (plan.action === "none") {
+    if (plan.reason === "user-quit") throw new McpUserQuitError();
     if (daemonUrl != null && (daemonReachable || explicitDaemonUrl)) return daemonUrl;
     throw new Error(
       `The registered OpenDesign runtime is unavailable and cannot be launched (${plan.reason}).`,
@@ -191,6 +214,14 @@ export async function ensureMcpDaemonUrl(
           timeoutMs: 300,
         });
     if (daemonUrl != null && await probeDaemon(daemonUrl)) return daemonUrl;
+    const waitingPlan = planMcpDaemonBootstrap({
+      daemonReachable: false,
+      env,
+      explicitDaemonUrl: false,
+    });
+    if (waitingPlan.action === "none" && waitingPlan.reason === "user-quit") {
+      throw new McpUserQuitError();
+    }
   }
   throw new Error(
     `OpenDesign was launched headlessly but its daemon did not become ready within ${timeoutMs}ms.`,
@@ -230,9 +261,18 @@ async function ensureManagedMcpDaemonUrl(
 
   const ready = await findDaemon(800);
   if (ready != null) return ready;
+  const initialPlan = planMcpDaemonBootstrap({
+    daemonReachable: false,
+    env,
+    explicitDaemonUrl: false,
+  });
+  if (initialPlan.action === "none" && initialPlan.reason === "user-quit") {
+    throw new McpUserQuitError();
+  }
   if (!await ownerRunning(800)) {
     const plan = planMcpDaemonBootstrap({ daemonReachable: false, env, explicitDaemonUrl: false });
     if (plan.action !== "spawn") {
+      if (plan.reason === "user-quit") throw new McpUserQuitError();
       throw new Error(
         `The registered OpenDesign runtime is unavailable and cannot be launched (${plan.reason}).`,
       );
@@ -246,6 +286,8 @@ async function ensureManagedMcpDaemonUrl(
     await deps.sleep(DEFAULT_BOOTSTRAP_POLL_MS);
     const url = await findDaemon(300);
     if (url != null) return url;
+    const plan = planMcpDaemonBootstrap({ daemonReachable: false, env, explicitDaemonUrl: false });
+    if (plan.action === "none" && plan.reason === "user-quit") throw new McpUserQuitError();
   }
   throw new Error(
     `OpenDesign did not make its local service available within ${deps.timeoutMs}ms.`,

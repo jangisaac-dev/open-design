@@ -52,6 +52,8 @@ export const MCP_BOOTSTRAP_CONTRACT = Object.freeze({
    * the daemon because the MCP process may not share its TMPDIR.
    */
   DISCOVERY_ENV: "OD_MCP_DISCOVERY",
+  /** Written when the user quits the packaged app (menu bar or app menu); cleared on desktop launch. */
+  USER_QUIT_MARKER: "mcp-user-quit.marker",
 } as const);
 
 export const SIDECAR_RUNTIME_ENV = Object.freeze({

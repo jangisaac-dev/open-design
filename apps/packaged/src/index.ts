@@ -1,5 +1,6 @@
 import {
   APP_KEYS,
+  MCP_BOOTSTRAP_CONTRACT,
   SIDECAR_MESSAGES,
   SIDECAR_MODES,
   SIDECAR_SOURCES,
@@ -31,6 +32,7 @@ import {
   type DesktopMainHandle,
 } from "@open-design/desktop/main";
 import { releaseChannelFromNamespace, releaseChannelFromVersion } from "@open-design/release";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { app, dialog } from "electron";
 
@@ -257,6 +259,17 @@ async function main(): Promise<void> {
   }
   const activeConfig = launcherRuntime.config;
   const paths = launcherRuntime.paths;
+  const userQuitMarkerPath = join(paths.dataRoot, MCP_BOOTSTRAP_CONTRACT.USER_QUIT_MARKER);
+  // Menu bar Quit and the app menu's Quit (Cmd+Q) record the quit so MCP
+  // servers ask the user to reopen the app instead of relaunching it.
+  const quitByUser = (): void => {
+    try {
+      writeFileSync(userQuitMarkerPath, new Date().toISOString(), "utf8");
+    } catch (error) {
+      packagedLogger?.warn("failed to write user-quit marker", { error });
+    }
+    app.quit();
+  };
   const mcpBootstrap = resolvePackagedMcpBootstrapLaunch({
     installedLaunchPath: launcherRuntime.installedLaunchPath,
     managed: isPackagedManagedLaunch(launcherRuntime),
@@ -411,75 +424,83 @@ async function main(): Promise<void> {
     if (desktopHandle == null) throw new Error("packaged desktop sidecar is not running");
     return await desktopHandle.invoke(action, input);
   };
-  const launchDesktop = async (): Promise<DesktopMainHandle> => await runDesktopMain(runtime, {
-    splashWindow: splash?.window,
-    splashStartedAt: splash?.startedAt,
-    async beforeShutdown(record) {
-      try {
+  const launchDesktop = async (): Promise<DesktopMainHandle> => {
+    try {
+      rmSync(userQuitMarkerPath, { force: true });
+    } catch (error) {
+      packagedLogger?.warn("failed to clear user-quit marker", { error });
+    }
+    return await runDesktopMain(runtime, {
+      onQuit: quitByUser,
+      splashWindow: splash?.window,
+      splashStartedAt: splash?.startedAt,
+      async beforeShutdown(record) {
+        try {
+          await retireObsoleteInstalledOuter();
+        } finally {
+          await sidecars.close(record);
+        }
+      },
+      quiesceRendererTransport() {
+        odProtocol.quiesce();
+      },
+      async discoverWebUrl() {
+        return packagedEntryUrl();
+      },
+      // Round-7 (lefarcen P2 @ runtime.ts:336): packaged main-process
+      // fetch targets the daemon sidecar's real http URL — never the
+      // od://app/ renderer URL, which Node/undici cannot resolve through
+      // Electron's protocol handler.
+      async discoverDaemonUrl() {
+        return sidecars.daemon.url;
+      },
+      registerDesktopAuth: async (secret) => {
+        try {
+          const result = await client.invoke<{ accepted: true }>(
+            APP_KEYS.DAEMON,
+            "register-desktop-auth",
+            { secret: secret.toString("base64") },
+            { timeoutMs: 800 },
+          );
+          return result.accepted === true;
+        } catch {
+          return false;
+        }
+      },
+      windowTitle: resolvePackagedWindowTitle(activeConfig),
+      menubarResident: process.platform === "darwin",
+      inviteProtocolClientPath:
+        process.platform === "win32" ? launcherRuntime.installedLaunchPath : null,
+      async onExternalShow() {
         await retireObsoleteInstalledOuter();
-      } finally {
-        await sidecars.close(record);
-      }
-    },
-    quiesceRendererTransport() {
-      odProtocol.quiesce();
-    },
-    async discoverWebUrl() {
-      return packagedEntryUrl();
-    },
-    // Round-7 (lefarcen P2 @ runtime.ts:336): packaged main-process
-    // fetch targets the daemon sidecar's real http URL — never the
-    // od://app/ renderer URL, which Node/undici cannot resolve through
-    // Electron's protocol handler.
-    async discoverDaemonUrl() {
-      return sidecars.daemon.url;
-    },
-    registerDesktopAuth: async (secret) => {
-      try {
-        const result = await client.invoke<{ accepted: true }>(
-          APP_KEYS.DAEMON,
-          "register-desktop-auth",
-          { secret: secret.toString("base64") },
-          { timeoutMs: 800 },
-        );
-        return result.accepted === true;
-      } catch {
-        return false;
-      }
-    },
-    windowTitle: resolvePackagedWindowTitle(activeConfig),
-    menubarResident: process.platform === "darwin",
-    inviteProtocolClientPath:
-      process.platform === "win32" ? launcherRuntime.installedLaunchPath : null,
-    async onExternalShow() {
-      await retireObsoleteInstalledOuter();
-    },
-    onDesktopReady(controls) {
-      void confirmPackagedLauncherRuntime(launcherRuntime).catch((error: unknown) => {
-        packagedLogger?.warn("failed to confirm packaged launcher runtime", { error });
-      });
-      void syncWindowsUninstallDisplayVersion({
-        namespace,
-        version: launcherRuntime.config.appVersion,
-      }).catch((error: unknown) => {
-        packagedLogger?.warn("failed to sync Windows uninstall registry version", { error });
-      });
-      secondInstanceHandoff.attach({
-        dispatchDeeplink: controls.dispatchInviteDeeplink,
-        show: controls.show,
-      });
-    },
-    preloadPath: join(app.getAppPath(), "preload.cjs"),
-    update: {
-      currentVersion: activeConfig.appVersion,
-      downloadRoot: paths.updateRoot,
-      installerObservationRoot: paths.installerObservationRoot,
-      launcherLaunchPath: launcherRuntime.installedLaunchPath,
-      launcherRoot: launcherRuntime.launcherPaths.root,
-      launcherPayloadExtractorPath: activeConfig.resourceRoot == null ? null : join(activeConfig.resourceRoot, "bin", "7z.exe"),
-      launcherRuntimePath: launcherRuntime.launcherPaths.runtimePath,
-    },
-  });
+      },
+      onDesktopReady(controls) {
+        void confirmPackagedLauncherRuntime(launcherRuntime).catch((error: unknown) => {
+          packagedLogger?.warn("failed to confirm packaged launcher runtime", { error });
+        });
+        void syncWindowsUninstallDisplayVersion({
+          namespace,
+          version: launcherRuntime.config.appVersion,
+        }).catch((error: unknown) => {
+          packagedLogger?.warn("failed to sync Windows uninstall registry version", { error });
+        });
+        secondInstanceHandoff.attach({
+          dispatchDeeplink: controls.dispatchInviteDeeplink,
+          show: controls.show,
+        });
+      },
+      preloadPath: join(app.getAppPath(), "preload.cjs"),
+      update: {
+        currentVersion: activeConfig.appVersion,
+        downloadRoot: paths.updateRoot,
+        installerObservationRoot: paths.installerObservationRoot,
+        launcherLaunchPath: launcherRuntime.installedLaunchPath,
+        launcherRoot: launcherRuntime.launcherPaths.root,
+        launcherPayloadExtractorPath: activeConfig.resourceRoot == null ? null : join(activeConfig.resourceRoot, "bin", "7z.exe"),
+        launcherRuntimePath: launcherRuntime.launcherPaths.runtimePath,
+      },
+    });
+  };
   const deferredDesktop = deferredHeadless
     ? createDeferredDesktopController({
       headlessStatus: () => ({
@@ -562,7 +583,7 @@ async function main(): Promise<void> {
       },
       // One quit path for every state: desktop main's before-quit handler
       // after restore, the headless handler above before it.
-      onQuit: () => app.quit(),
+      onQuit: quitByUser,
     });
   }
 }

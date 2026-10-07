@@ -217,6 +217,8 @@ export type DesktopMainOptions = {
   windowTitle?: string;
   /** Packaged macOS app with a menu bar icon; see DesktopRuntimeOptions.menubarResident. */
   menubarResident?: boolean;
+  /** Replaces the macOS app menu's Quit item (Cmd+Q); packaged records a user quit there. */
+  onQuit?: () => void;
   onDesktopReady?: (controls: {
     dispatchInviteDeeplink(url: string | null): void;
     show(): void;
@@ -402,7 +404,7 @@ type DesktopMenuController = {
 
 function installDesktopMenu(
   runtime: SidecarRuntimeContext<LegacySidecarRuntimeLayout>,
-  options: Pick<DesktopMainOptions, "discoverDaemonUrl" | "discoverWebUrl"> & {
+  options: Pick<DesktopMainOptions, "discoverDaemonUrl" | "discoverWebUrl" | "onQuit"> & {
     onOpenUpdateDialog?: () => void;
     updater: DesktopUpdater;
   },
@@ -506,7 +508,10 @@ function installDesktopMenu(
                 { role: "hideOthers" as const },
                 { role: "unhide" as const },
                 { type: "separator" as const },
-                { role: "quit" as const },
+                // A role item ignores click, so a custom quit handler needs a plain item.
+                options.onQuit == null
+                  ? { role: "quit" as const }
+                  : { accelerator: "Command+Q", click: options.onQuit, label: `Quit ${app.name}` },
               ],
             },
           ]

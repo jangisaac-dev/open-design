@@ -51,6 +51,10 @@ import {
 } from './mcp-apps/brief-resource.js';
 import { DEFAULT_AMR_RECHARGE_URL } from './integrations/vela-errors.js';
 import {
+  isMcpUserQuitError,
+  MCP_USER_QUIT_MESSAGE,
+} from './mcp-bootstrap.js';
+import {
   type ExternalPluginContext,
   logicalPluginRequestDigest,
   mapMcpHostProduct,
@@ -148,8 +152,10 @@ export function createMcpDaemonTarget(options: RunMcpOptions): {
   ): Promise<McpToolCallResult>;
   currentUrl(): string;
   refresh(): Promise<string>;
+  userFacingError(): string | null;
 } {
   let current = normalizeDaemonUrl(options.daemonUrl);
+  let userQuitMessage: string | null = null;
   let refreshTask: Promise<string> | null = null;
 
   const refresh = async (): Promise<string> => {
@@ -157,9 +163,13 @@ export function createMcpDaemonTarget(options: RunMcpOptions): {
     refreshTask ??= options.resolveDaemonUrl()
       .then((url) => {
         current = normalizeDaemonUrl(url);
+        userQuitMessage = null;
         return current;
       })
-      .catch(() => current)
+      .catch((error: unknown) => {
+        userQuitMessage = isMcpUserQuitError(error) ? MCP_USER_QUIT_MESSAGE : null;
+        return current;
+      })
       .finally(() => {
         refreshTask = null;
       });
@@ -169,6 +179,7 @@ export function createMcpDaemonTarget(options: RunMcpOptions): {
   return {
     currentUrl: () => current,
     refresh,
+    userFacingError: () => userQuitMessage,
     async call(name, _args, handler) {
       const invoke = async (baseUrl: string): Promise<McpToolCallResult> => {
         try {
@@ -178,12 +189,22 @@ export function createMcpDaemonTarget(options: RunMcpOptions): {
         }
       };
       const firstUrl = await refresh();
+      if (userQuitMessage != null) return errorResult(userQuitMessage);
       const first = await invoke(firstUrl);
       if (!isDaemonUnreachableResult(first) || !options.resolveDaemonUrl) {
         return first;
       }
 
       const recoveredUrl = await refresh();
+      if (userQuitMessage != null) {
+        if (SAFE_MCP_DAEMON_RETRY_CALLS.has(name)) return errorResult(userQuitMessage);
+        return errorResult([
+          ...first.content.map((item) => item.text),
+          `Open Design stopped while "${name}" was in progress, so this change may or may not have been applied. `
+            + 'Check the current state before retrying.',
+          userQuitMessage,
+        ].join('\n\n'));
+      }
       if (!SAFE_MCP_DAEMON_RETRY_CALLS.has(name)) {
         // A failed write is ambiguous: the daemon may have committed it before
         // the transport broke. Refresh the target for the next request, but do
@@ -997,6 +1018,10 @@ export async function _listMcpResources(
       return ok({ skillsData, dsData });
     },
   );
+  const refreshError = daemonTarget.userFacingError();
+  if (catalog.isError === true && refreshError != null) {
+    throw new Error(refreshError);
+  }
   const catalogPayload = parseMcpResult(catalog);
   const skillsData = (catalogPayload?.skillsData ?? {}) as SkillsPayload;
   const dsData = (catalogPayload?.dsData ?? {}) as DesignSystemsPayload;
@@ -2041,6 +2066,8 @@ async function runMcpStdioImplementation(options: RunMcpOptions): Promise<void> 
       if (locale) args.locale = locale;
     }
     const baseUrl = await daemonTarget.refresh();
+    const refreshError = daemonTarget.userFacingError();
+    if (refreshError != null) return errorResult(refreshError);
     observabilityPromise ??= McpObservabilitySession.create(
       baseUrl,
       server.getClientVersion(),

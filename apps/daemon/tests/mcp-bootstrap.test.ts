@@ -1,4 +1,7 @@
 import { MCP_BOOTSTRAP_CONTRACT } from "@open-design/sidecar-proto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -78,6 +81,33 @@ describe("planMcpDaemonBootstrap", () => {
       reason: "invalid-bootstrap-args",
     });
   });
+
+  it("refuses bootstrap when the user-quit marker exists under OD_DATA_DIR", () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), "open-design-mcp-quit-"));
+    try {
+      writeFileSync(join(dataRoot, MCP_BOOTSTRAP_CONTRACT.USER_QUIT_MARKER), new Date().toISOString());
+      expect(planMcpDaemonBootstrap({
+        daemonReachable: false,
+        explicitDaemonUrl: false,
+        env: {
+          OD_DATA_DIR: dataRoot,
+          OD_MCP_BOOTSTRAP_COMMAND: "/usr/bin/open",
+          OD_MCP_BOOTSTRAP_ARGS: '["--headless"]',
+        },
+      })).toEqual({ action: "none", reason: "user-quit" });
+      expect(planMcpDaemonBootstrap({
+        daemonReachable: true,
+        explicitDaemonUrl: false,
+        env: {
+          OD_DATA_DIR: dataRoot,
+          OD_MCP_BOOTSTRAP_COMMAND: "/usr/bin/open",
+          OD_MCP_BOOTSTRAP_ARGS: '["--headless"]',
+        },
+      })).toEqual({ action: "none", reason: "daemon-ready" });
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("ensureMcpDaemonUrl", () => {
@@ -111,6 +141,25 @@ describe("ensureMcpDaemonUrl", () => {
     const resolveDaemonUrl = vi.fn(async () => "http://127.0.0.1:60001");
     await ensureMcpDaemonUrl({ env: {}, connectInherited: () => null, resolveDaemonUrl, probeDaemon: async () => true });
     expect(resolveDaemonUrl).toHaveBeenCalledWith(expect.objectContaining({ allowLegacyDefault: false }));
+  });
+
+  it("keeps an explicit daemon URL authoritative over the user-quit marker", async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), "open-design-mcp-quit-"));
+    writeFileSync(join(dataRoot, MCP_BOOTSTRAP_CONTRACT.USER_QUIT_MARKER), new Date().toISOString());
+    const spawnBootstrap = vi.fn(async () => undefined);
+    try {
+      await expect(ensureMcpDaemonUrl({
+        env: { OD_DATA_DIR: dataRoot },
+        flagUrl: "http://127.0.0.1:62001",
+        connectInherited: () => null,
+        resolveDaemonUrl: async ({ flagUrl }) => flagUrl ?? "http://127.0.0.1:62002",
+        probeDaemon: async () => false,
+        spawnBootstrap,
+      })).resolves.toBe("http://127.0.0.1:62001");
+      expect(spawnBootstrap).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   });
 
   it("does not substitute an unrelated tools-dev daemon for the registered packaged IPC", async () => {
@@ -170,6 +219,32 @@ describe("ensureMcpDaemonUrl", () => {
 
     expect(spawnBootstrap).toHaveBeenCalledTimes(1);
   });
+
+  it("reports a user quit that happens while waiting for a spawned daemon", async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), "open-design-mcp-quit-"));
+    const message = "Open Design is not running because the user quit it. Ask the user to open the Open Design app, then retry.";
+    const spawnBootstrap = vi.fn(async () => {
+      writeFileSync(join(dataRoot, MCP_BOOTSTRAP_CONTRACT.USER_QUIT_MARKER), new Date().toISOString());
+    });
+    try {
+      await expect(ensureMcpDaemonUrl({
+        env: {
+          OD_DATA_DIR: dataRoot,
+          OD_MCP_BOOTSTRAP_COMMAND: "/usr/bin/open",
+          OD_MCP_BOOTSTRAP_ARGS: '["--headless"]',
+        },
+        connectInherited: (() => ({ status: vi.fn() })) as never,
+        discoverTargetDaemonUrl: async () => null,
+        probeDaemon: async () => false,
+        sleep: async () => undefined,
+        spawnBootstrap,
+        timeoutMs: 100,
+      })).rejects.toMatchObject({ message });
+      expect(spawnBootstrap).toHaveBeenCalledOnce();
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("managed MCP registrations", () => {
@@ -188,6 +263,45 @@ describe("managed MCP registrations", () => {
   function statusReader(statuses: Record<string, unknown>) {
     return vi.fn(async (endpoint: string) => (statuses[endpoint] ?? null) as never);
   }
+
+  it("returns the user-quit message after discovering no daemon and does not bootstrap either registration shape", async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), "open-design-mcp-quit-"));
+    const markerPath = join(dataRoot, MCP_BOOTSTRAP_CONTRACT.USER_QUIT_MARKER);
+    writeFileSync(markerPath, new Date().toISOString());
+    const message = "Open Design is not running because the user quit it. Ask the user to open the Open Design app, then retry.";
+    const spawnBootstrap = vi.fn(async () => undefined);
+    const statusAtEndpoint = statusReader({});
+    try {
+      await expect(ensureMcpDaemonUrl({
+        env: managedEnv({ OD_DATA_DIR: dataRoot }),
+        probeDaemon: async () => true,
+        spawnBootstrap,
+        statusAtEndpoint,
+        timeoutMs: 0,
+      })).rejects.toMatchObject({ message });
+
+      await expect(ensureMcpDaemonUrl({
+        env: {
+          OD_DATA_DIR: dataRoot,
+          OD_MCP_BOOTSTRAP_COMMAND: "/usr/bin/open",
+          OD_MCP_BOOTSTRAP_ARGS: '["--headless"]',
+        },
+        connectInherited: (() => ({ status: vi.fn() })) as never,
+        discoverTargetDaemonUrl: async () => null,
+        probeDaemon: async () => true,
+        spawnBootstrap,
+        timeoutMs: 0,
+      })).rejects.toMatchObject({ message });
+
+      expect(statusAtEndpoint.mock.calls.map(([endpoint]) => endpoint)).toEqual([
+        "/ipc/daemon-runtime.sock",
+        "/ipc/daemon-headless.sock",
+      ]);
+      expect(spawnBootstrap).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
 
   it("parses only well-formed managed registrations", () => {
     expect(parseManagedMcpDiscovery(managedEnv())).toEqual({

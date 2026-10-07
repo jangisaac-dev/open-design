@@ -2579,10 +2579,18 @@ async function runMcp(args) {
     return;
   }
 
-  const { ensureMcpDaemonUrl } = await import('./mcp-bootstrap.js');
-  const daemonUrl = await ensureMcpDaemonUrl({
-    flagUrl: flags['daemon-url'],
-  });
+  const { ensureMcpDaemonUrl, isMcpUserQuitError } = await import('./mcp-bootstrap.js');
+  let daemonUrl: string;
+  try {
+    daemonUrl = await ensureMcpDaemonUrl({
+      flagUrl: flags['daemon-url'],
+    });
+  } catch (error) {
+    if (!isMcpUserQuitError(error)) throw error;
+    // Keep the stdio server available so MCP calls can explain the user
+    // quit state and recover automatically when the marker clears.
+    daemonUrl = 'http://127.0.0.1:1';
+  }
 
   const { runMcpStdio } = await import('./mcp.js');
   await runMcpStdio({
