@@ -2769,11 +2769,16 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
         if (!window.isDestroyed() && !window.isVisible()) app.dock?.hide();
       }, 1000);
     };
+    // `backgroundThrottling: false` keeps a hidden window's page "visible", so the
+    // home screen's endless animations and timers kept the GPU busy after close.
+    // Throttling must be on before hide() for Chromium to mark the page hidden.
+    window.on("show", () => window.webContents.setBackgroundThrottling(false));
     window.on("close", (event) => {
       if (stopped) return;
       event.preventDefault();
       hideWindowExitingFullscreen({
         hide: () => {
+          window.webContents.setBackgroundThrottling(true);
           window.hide();
           // Reopening the app activates it before `show()` runs, and macOS
           // then switches to the Space the window was closed on. A hidden
