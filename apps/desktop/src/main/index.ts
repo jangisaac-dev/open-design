@@ -68,6 +68,7 @@ import {
   registerDesktopDiagnosticsIpc,
 } from "./diagnostics.js";
 import { notifyDesktopExternalShow } from "./external-show.js";
+import { watchUserDesktopIntent } from "./desktop-intent.js";
 
 // Re-export pure URL-policy helpers so the packaged workspace's
 // vitest can pin their behaviour without spinning up a full Electron
@@ -86,6 +87,7 @@ export {
   type SplashStageSurface,
 } from "./runtime.js";
 export { createMenubarTray } from "./menubar.js";
+export { watchUserDesktopIntent } from "./desktop-intent.js";
 
 // Re-export the path-validation helpers for the same reason (#974).
 // shell.openPath is privileged main-process behaviour; pinning the
@@ -1094,8 +1096,10 @@ export async function runDesktopMain(
     shutdownAndExit();
   });
 
-  app.on("activate", () => {
-    desktop?.show();
+  // A background reopen (the MCP bootstrap's `open -g`) must not surface the
+  // window. `open-url` stays with the invite deeplink handler.
+  watchUserDesktopIntent(app, (source) => {
+    if (source === "activate") desktop?.show();
   });
 
   return {
