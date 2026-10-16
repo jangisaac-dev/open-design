@@ -35,6 +35,6 @@ describe("packaged desktop sidecar boundary", () => {
     expect(registrationEnd).toBeGreaterThan(registrationStart);
     const registration = main.slice(registrationStart, registrationEnd);
     expect(registration).toContain("try {");
-    expect(registration).toContain("catch {\n        return false;");
+    expect(registration).toMatch(/catch \{\s*return false;/);
   });
 });
