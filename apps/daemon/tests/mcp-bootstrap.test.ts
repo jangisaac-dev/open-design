@@ -108,6 +108,26 @@ describe("planMcpDaemonBootstrap", () => {
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
+
+  it("ignores a user-quit marker under another install's data root", () => {
+    const quitRoot = mkdtempSync(join(tmpdir(), "open-design-mcp-quit-"));
+    const otherRoot = mkdtempSync(join(tmpdir(), "open-design-mcp-other-"));
+    try {
+      writeFileSync(join(quitRoot, MCP_BOOTSTRAP_CONTRACT.USER_QUIT_MARKER), new Date().toISOString());
+      expect(planMcpDaemonBootstrap({
+        daemonReachable: false,
+        explicitDaemonUrl: false,
+        env: {
+          OD_DATA_DIR: otherRoot,
+          OD_MCP_BOOTSTRAP_COMMAND: "/usr/bin/open",
+          OD_MCP_BOOTSTRAP_ARGS: '["--headless"]',
+        },
+      })).toMatchObject({ action: "spawn" });
+    } finally {
+      rmSync(quitRoot, { recursive: true, force: true });
+      rmSync(otherRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("ensureMcpDaemonUrl", () => {
