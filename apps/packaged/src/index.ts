@@ -86,7 +86,7 @@ import { syncWindowsUninstallDisplayVersion } from "./windows-lifecycle.js";
 let packagedLogger: PackagedDesktopLogger | null = null;
 const secondInstanceHandoff = createPackagedSecondInstanceHandoff();
 // Module scope keeps the Tray referenced; a collected Tray loses its icon.
-let menubarTray: Awaited<ReturnType<typeof createMenubarTray>> | null = null;
+let menubarTray: ReturnType<typeof createMenubarTray> | null = null;
 
 // Telemetry context for the fatal-exit path. Populated once config + launcher
 // runtime are resolved so the `main().catch` below can report a startup failure
@@ -575,7 +575,7 @@ async function main(): Promise<void> {
     });
   }
   if (process.platform === "darwin") {
-    menubarTray = await createMenubarTray({
+    menubarTray = createMenubarTray({
       onOpen: () => {
         void invokeDesktop(SIDECAR_MESSAGES.SHOW, {}).catch((error: unknown) => {
           packagedLogger?.warn("menu bar open failed", { error });

@@ -1,20 +1,20 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type MockTray = {
   handlers: Map<string, () => void>;
   image: unknown;
   popUpContextMenu: ReturnType<typeof vi.fn>;
   setContextMenu: ReturnType<typeof vi.fn>;
-  setTitle: ReturnType<typeof vi.fn>;
+};
+
+type MockImage = {
+  addRepresentation: ReturnType<typeof vi.fn>;
+  dataURL: string;
+  setTemplateImage: ReturnType<typeof vi.fn>;
 };
 
 const electron = vi.hoisted(() => ({
-  emptyImageCalls: 0,
-  thumbnailEmpty: false,
-  thumbnailError: null as unknown,
-  thumbnailRejects: false,
-  thumbnailRequests: [] as Array<{ path: string; options: { width: number; height: number } }>,
-  thumbnailImage: null as unknown,
+  images: [] as MockImage[],
   trays: [] as MockTray[],
 }));
 
@@ -23,7 +23,6 @@ vi.mock("electron", () => {
     handlers = new Map<string, () => void>();
     popUpContextMenu = vi.fn();
     setContextMenu = vi.fn();
-    setTitle = vi.fn();
     constructor(public image: unknown) {
       electron.trays.push(this);
     }
@@ -36,17 +35,11 @@ vi.mock("electron", () => {
     Menu: { buildFromTemplate: (template: unknown) => ({ template }) },
     Tray,
     nativeImage: {
-      createEmpty: () => {
-        electron.emptyImageCalls += 1;
-        return { kind: "empty" };
+      createFromDataURL: (dataURL: string) => {
+        const image = { addRepresentation: vi.fn(), dataURL, setTemplateImage: vi.fn() };
+        electron.images.push(image);
+        return image;
       },
-      createThumbnailFromPath: vi.fn(async (path: string, options: { width: number; height: number }) => {
-        electron.thumbnailRequests.push({ path, options });
-        if (electron.thumbnailRejects) throw electron.thumbnailError;
-        const thumbnail = { isEmpty: () => electron.thumbnailEmpty };
-        electron.thumbnailImage = thumbnail;
-        return thumbnail;
-      }),
     },
   };
 });
@@ -54,23 +47,15 @@ vi.mock("electron", () => {
 import { createMenubarTray } from "../../src/main/menubar.js";
 
 beforeEach(() => {
-  electron.emptyImageCalls = 0;
-  electron.thumbnailEmpty = false;
-  electron.thumbnailError = null;
-  electron.thumbnailRejects = false;
-  electron.thumbnailImage = null;
-  electron.thumbnailRequests.length = 0;
+  electron.images.length = 0;
   electron.trays.length = 0;
-  Object.defineProperty(process, "resourcesPath", { configurable: true, value: "/App/Contents/Resources" });
 });
 
-afterEach(() => vi.restoreAllMocks());
-
 describe("createMenubarTray", () => {
-  it("opens the window on left click without popping the menu", async () => {
+  it("opens the window on left click without popping the menu", () => {
     const onOpen = vi.fn();
     const onQuit = vi.fn();
-    await createMenubarTray({ onOpen, onQuit });
+    createMenubarTray({ onOpen, onQuit });
     const tray = electron.trays[0]!;
 
     tray.handlers.get("click")?.();
@@ -81,8 +66,8 @@ describe("createMenubarTray", () => {
     expect(tray.setContextMenu).not.toHaveBeenCalled();
   });
 
-  it("offers Open and Quit on right click", async () => {
-    await createMenubarTray({ onOpen: vi.fn(), onQuit: vi.fn() });
+  it("offers Open and Quit on right click", () => {
+    createMenubarTray({ onOpen: vi.fn(), onQuit: vi.fn() });
     const tray = electron.trays[0]!;
 
     tray.handlers.get("right-click")?.();
@@ -94,10 +79,10 @@ describe("createMenubarTray", () => {
     expect(tray.setContextMenu).not.toHaveBeenCalled();
   });
 
-  it("calls only onOpen when the Open menu item is clicked", async () => {
+  it("calls only onOpen when the Open menu item is clicked", () => {
     const onOpen = vi.fn();
     const onQuit = vi.fn();
-    await createMenubarTray({ onOpen, onQuit });
+    createMenubarTray({ onOpen, onQuit });
     const tray = electron.trays[0]!;
 
     tray.handlers.get("right-click")?.();
@@ -110,10 +95,10 @@ describe("createMenubarTray", () => {
     expect(onQuit).not.toHaveBeenCalled();
   });
 
-  it("calls only onQuit when the Quit menu item is clicked", async () => {
+  it("calls only onQuit when the Quit menu item is clicked", () => {
     const onOpen = vi.fn();
     const onQuit = vi.fn();
-    await createMenubarTray({ onOpen, onQuit });
+    createMenubarTray({ onOpen, onQuit });
     const tray = electron.trays[0]!;
 
     tray.handlers.get("right-click")?.();
@@ -126,51 +111,16 @@ describe("createMenubarTray", () => {
     expect(onOpen).not.toHaveBeenCalled();
   });
 
-  it("loads and passes the bundled thumbnail directly to the tray", async () => {
-    await createMenubarTray({ onOpen: vi.fn(), onQuit: vi.fn() });
-    const tray = electron.trays[0]!;
+  it("shows the logo glyph as a template image with a 2x representation", () => {
+    createMenubarTray({ onOpen: vi.fn(), onQuit: vi.fn() });
+    const image = electron.images[0]!;
 
-    expect(electron.thumbnailRequests).toEqual([
-      {
-        path: "/App/Contents/Resources/icon.icns",
-        options: { width: 18, height: 18 },
-      },
-    ]);
-    expect(tray.image).toBe(electron.thumbnailImage);
-    expect(tray.setTitle).not.toHaveBeenCalled();
-    expect(electron.emptyImageCalls).toBe(0);
-  });
-
-  it("uses an empty image and text label for an empty thumbnail", async () => {
-    electron.thumbnailEmpty = true;
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    await createMenubarTray({ onOpen: vi.fn(), onQuit: vi.fn() });
-    const tray = electron.trays[0]!;
-
-    expect(tray.image).toEqual({ kind: "empty" });
-    expect(tray.setTitle).toHaveBeenCalledWith("OD");
-    expect(electron.emptyImageCalls).toBe(1);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("menu bar icon unavailable"), {
-      resourcesPath: "/App/Contents/Resources",
+    expect(electron.trays[0]!.image).toBe(image);
+    expect(image.dataURL).toMatch(/^data:image\/png;base64,/);
+    expect(image.addRepresentation).toHaveBeenCalledWith({
+      scaleFactor: 2,
+      dataURL: expect.stringMatching(/^data:image\/png;base64,/),
     });
-  });
-
-  it("uses an empty image and includes a thumbnail rejection in the warning", async () => {
-    const error = new Error("thumbnail failed");
-    electron.thumbnailRejects = true;
-    electron.thumbnailError = error;
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    await createMenubarTray({ onOpen: vi.fn(), onQuit: vi.fn() });
-    const tray = electron.trays[0]!;
-
-    expect(tray.image).toEqual({ kind: "empty" });
-    expect(tray.setTitle).toHaveBeenCalledWith("OD");
-    expect(electron.emptyImageCalls).toBe(1);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("menu bar icon unavailable"), {
-      resourcesPath: "/App/Contents/Resources",
-      error,
-    });
+    expect(image.setTemplateImage).toHaveBeenCalledWith(true);
   });
 });
